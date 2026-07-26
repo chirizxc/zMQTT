@@ -1,6 +1,45 @@
 # CHANGELOG
 
 
+## v0.0.6 (2026-07-26)
+
+### Bug Fixes
+
+- Bound the protocol-level delivery queue
+  ([#33](https://github.com/faststream-community/zMQTT/pull/33),
+  [`3dcd418`](https://github.com/faststream-community/zMQTT/commit/3dcd41872899f72a4aeb7eee41aa65bedbc019cf))
+
+- Declare typing_extensions dependency for Python < 3.11
+  ([#30](https://github.com/faststream-community/zMQTT/pull/30),
+  [`a6dad1d`](https://github.com/faststream-community/zMQTT/commit/a6dad1df13cae58ee394ccc1038d9e2c6eb417c0))
+
+- Raise on SUBACK failure codes instead of ignoring them
+  ([#32](https://github.com/faststream-community/zMQTT/pull/32),
+  [`2b4dd59`](https://github.com/faststream-community/zMQTT/commit/2b4dd597ef012e13fd4358e96bf187bcca871a29))
+
+- Strip broker shared/decorator prefixes via a configurable allowlist
+  ([#31](https://github.com/faststream-community/zMQTT/pull/31),
+  [`194b530`](https://github.com/faststream-community/zMQTT/commit/194b530c9b76fa62fbdd11e82ed02cc99aed9221))
+
+- Treat broker-initiated DISCONNECT as a disconnection, and fail fast
+  ([`bb3ca58`](https://github.com/faststream-community/zMQTT/commit/bb3ca58cb868a1cdbf27452e1b58728baf025220))
+
+### Documentation
+
+- Fix link ([#28](https://github.com/faststream-community/zMQTT/pull/28),
+  [`a2e42bb`](https://github.com/faststream-community/zMQTT/commit/a2e42bb9f71b2885ec6099f51895002455ebd87c))
+
+### Features
+
+- Mqtt 5 subscription identifiers
+  ([`a3ebdda`](https://github.com/faststream-community/zMQTT/commit/a3ebdda90e7cae95873de5ced3da97cd798095c0))
+
+### Testing
+
+- Add EMQX to the broker test matrix ([#36](https://github.com/faststream-community/zMQTT/pull/36),
+  [`950dbe2`](https://github.com/faststream-community/zMQTT/commit/950dbe2488e6e2479d7293106e5434677f609aa7))
+
+
 ## v0.0.5 (2026-06-08)
 
 ### Documentation
