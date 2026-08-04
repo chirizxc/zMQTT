@@ -13,8 +13,8 @@ from zmqtt._internal.state import (
     PacketIdPool,
     QoS1Flight,
     SessionState,
-    SubscriptionEntry,
 )
+from zmqtt._internal.subscription_index import SubscriptionEntry
 from zmqtt._internal.types.qos import QoS
 
 
@@ -125,7 +125,8 @@ def test_session_state_starts_empty() -> None:
     assert state.inflight_qos1 == {}
     assert state.inflight_qos2_out == {}
     assert state.inflight_qos2_in == {}
-    assert state.subscriptions == {}
+    assert state.subscriptions.match("any/topic") == []
+    assert state.subscriptions.contains("test/#") is False
     assert state.pending_subs == {}
     assert state.pending_unsubs == {}
 
@@ -134,9 +135,18 @@ def test_session_state_clear() -> None:
     state = SessionState()
     state.packet_ids.acquire()
     state.inflight_qos1[1] = None  # type: ignore[assignment]
-    state.subscriptions["test/#"] = SubscriptionEntry(queue=asyncio.Queue())
+    state.subscriptions.add(
+        "test/#",
+        SubscriptionEntry(
+            queue=asyncio.Queue(),
+            actual_filter="test/#",
+            subscription_identifier=5,
+        ),
+    )
     state.clear()
     assert state.inflight_qos1 == {}
-    assert state.subscriptions == {}
+    assert state.subscriptions.match("any/topic") == []
+    assert state.subscriptions.contains("test/#") is False
+    assert state.subscriptions.by_identifier(5) == []
     # packet_ids reset
     assert state.packet_ids.acquire() == 1

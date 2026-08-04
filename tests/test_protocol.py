@@ -20,12 +20,12 @@ from zmqtt._internal.packets.publish import PubAck, Publish
 from zmqtt._internal.packets.reader import PacketBuffer
 from zmqtt._internal.packets.subscribe import SubAck, Subscribe, SubscriptionRequest
 from zmqtt._internal.protocol import (
-    _DEFAULT_STRIPPED_PREFIXES,
     MQTTProtocol,
     _raise_on_rejected_filters,
-    _shared_filter_to_actual,
 )
-from zmqtt._internal.state import SessionState, SubscriptionEntry
+from zmqtt._internal.state import SessionState
+from zmqtt._internal.subscription_index import SubscriptionEntry
+from zmqtt._internal.topic_matching import _DEFAULT_STRIPPED_PREFIXES, _shared_filter_to_actual
 from zmqtt._internal.types.message import Message
 from zmqtt._internal.types.qos import QoS
 from zmqtt.errors import (
@@ -174,7 +174,7 @@ async def test_stripped_prefix_filter_receives_messages() -> None:
         queue=asyncio.Queue(),
         actual_filter=_shared_filter_to_actual("$queue/sensors/+/state", _DEFAULT_STRIPPED_PREFIXES),
     )
-    protocol._state.subscriptions["$queue/sensors/+/state"] = entry
+    protocol._state.subscriptions.add("$queue/sensors/+/state", entry)
 
     await protocol._deliver(
         Publish(
@@ -219,18 +219,20 @@ async def test_configured_prefix_reaches_subscribe() -> None:
     async def subscribe() -> None:
         await protocol.subscribe(
             [SubscriptionRequest(topic_filter="$q/sensors/+/state", qos=QoS.AT_MOST_ONCE)],
+            queue_maxsize=4,
         )
 
     task = asyncio.create_task(subscribe())
     await asyncio.sleep(0)
     transport.feed(encode(SubAck(packet_id=1, return_codes=(0x00,)), version="3.1.1"))
-    read = asyncio.create_task(protocol._read_loop())
+    read = await _run_read_loop(protocol)
     await task
-    read.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await read
+    await _stop_task(read)
 
-    assert protocol._state.subscriptions["$q/sensors/+/state"].actual_filter == "sensors/+/state"
+    entry = protocol._state.subscriptions.get("$q/sensors/+/state")
+    assert entry is not None
+    assert entry.actual_filter == "sensors/+/state"
+    assert entry.queue.maxsize == 4
 
 
 async def test_subscription_identifier_routes_delivery() -> None:
@@ -251,8 +253,8 @@ async def test_subscription_identifier_routes_delivery() -> None:
         actual_filter="demo/+/state",
         subscription_identifier=2,
     )
-    protocol._state.subscriptions["$share/g/demo/+/state"] = shared
-    protocol._state.subscriptions["demo/+/state"] = plain
+    protocol._state.subscriptions.add("$share/g/demo/+/state", shared)
+    protocol._state.subscriptions.add("demo/+/state", plain)
 
     for echoed, entry in ((1, shared), (2, plain)):
         await protocol._deliver(
@@ -272,6 +274,62 @@ async def test_subscription_identifier_routes_delivery() -> None:
     assert plain.queue.qsize() == 1
 
 
+async def test_unknown_subscription_identifier_falls_back_to_topic_match(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    protocol, _ = make_protocol()
+    entry = SubscriptionEntry(queue=asyncio.Queue(), actual_filter="demo/#")
+    protocol._state.subscriptions.add("demo/#", entry)
+
+    with caplog.at_level(logging.WARNING):
+        await protocol._deliver(
+            Publish(
+                topic="demo/device/state",
+                payload=b"x",
+                qos=QoS.AT_MOST_ONCE,
+                retain=False,
+                dup=False,
+                properties=PublishProperties(subscription_identifier=999),
+            ),
+            ack_callback=None,
+        )
+
+    assert entry.queue.qsize() == 1
+    assert "identifier 999" in caplog.text
+
+
+def test_subscription_identifier_selects_auto_ack_policy() -> None:
+    protocol, _ = make_protocol()
+    automatic = SubscriptionEntry(
+        queue=asyncio.Queue(),
+        auto_ack=True,
+        actual_filter="demo/+/state",
+        subscription_identifier=1,
+    )
+    manual = SubscriptionEntry(
+        queue=asyncio.Queue(),
+        auto_ack=False,
+        actual_filter="demo/+/state",
+        subscription_identifier=2,
+    )
+    protocol._state.subscriptions.add("$share/g/demo/+/state", automatic)
+    protocol._state.subscriptions.add("demo/+/state", manual)
+
+    def publish(identifier: int) -> Publish:
+        return Publish(
+            topic="demo/device/state",
+            payload=b"x",
+            qos=QoS.AT_LEAST_ONCE,
+            retain=False,
+            dup=False,
+            packet_id=1,
+            properties=PublishProperties(subscription_identifier=identifier),
+        )
+
+    assert protocol._should_auto_ack(publish(1))
+    assert not protocol._should_auto_ack(publish(2))
+
+
 async def test_multi_filter_subscription_delivers_once_per_publish() -> None:
     """One subscribe() with MANY filters is ONE subscription: one identifier, one
     per-filter entry (each with its own relay queue, all draining into the same
@@ -289,7 +347,7 @@ async def test_multi_filter_subscription_delivers_once_per_publish() -> None:
             subscription_identifier=1,
         )
         entries[topic_filter] = entry
-        protocol._state.subscriptions[f"$share/g/{topic_filter}"] = entry
+        protocol._state.subscriptions.add(f"$share/g/{topic_filter}", entry)
 
     await protocol._deliver(
         Publish(
@@ -314,17 +372,16 @@ async def test_subscribe_sends_identifier_in_properties() -> None:
     async def subscribe() -> None:
         await protocol.subscribe(
             [SubscriptionRequest(topic_filter="a/b", qos=QoS.AT_LEAST_ONCE)],
+            queue_maxsize=3,
             subscription_identifier=7,
         )
 
     task = asyncio.create_task(subscribe())
     await asyncio.sleep(0)
     transport.feed(encode(SubAck(packet_id=1, return_codes=(0x01,)), version="5.0"))
-    read = asyncio.create_task(protocol._read_loop())
+    read = await _run_read_loop(protocol)
     await task
-    read.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await read
+    await _stop_task(read)
 
     buf = PacketBuffer(version="5.0")
     buf.feed(transport.sent[0])
@@ -332,6 +389,11 @@ async def test_subscribe_sends_identifier_in_properties() -> None:
     assert isinstance(packet, Subscribe)
     assert packet.properties is not None
     assert packet.properties.subscription_identifier == 7
+    entry = protocol._state.subscriptions.get("a/b")
+    assert entry is not None
+    assert entry.queue.maxsize == 3
+    assert entry.subscription_identifier == 7
+    assert protocol._state.subscriptions.by_identifier(7) == [("a/b", entry)]
 
 
 async def test_broker_disconnect_is_a_disconnection() -> None:
@@ -389,6 +451,27 @@ def test_suback_granted_codes_pass() -> None:
     _raise_on_rejected_filters(filters, suback)  # no raise
 
 
+async def test_suback_failure_rolls_back_subscription_index() -> None:
+    protocol, transport = make_protocol(version="5.0")
+
+    task = asyncio.create_task(
+        protocol.subscribe(
+            [SubscriptionRequest(topic_filter="denied/topic", qos=QoS.AT_LEAST_ONCE)],
+            subscription_identifier=7,
+        ),
+    )
+    await asyncio.sleep(0)
+    transport.feed(encode(SubAck(packet_id=1, return_codes=(0x87,)), version="5.0"))
+    read = await _run_read_loop(protocol)
+
+    with pytest.raises(MQTTSubscribeError):
+        await task
+    await _stop_task(read)
+
+    assert not protocol._state.subscriptions.contains("denied/topic")
+    assert protocol._state.subscriptions.by_identifier(7) == []
+
+
 async def test_inbound_qos2_manual_ack_duplicate_ignored() -> None:
     """Broker retransmit before app calls ack() must not re-queue the message."""
     protocol, transport = make_protocol()
@@ -398,10 +481,13 @@ async def test_inbound_qos2_manual_ack_duplicate_ignored() -> None:
     await protocol.connect(Connect(client_id="c", clean_session=True, keepalive=60))
 
     queue: asyncio.Queue[Message] = asyncio.Queue()
-    protocol._state.subscriptions["t/#"] = SubscriptionEntry(
-        queue=queue,
-        auto_ack=False,
-        actual_filter="t/#",
+    protocol._state.subscriptions.add(
+        "t/#",
+        SubscriptionEntry(
+            queue=queue,
+            auto_ack=False,
+            actual_filter="t/#",
+        ),
     )
     transport.sent.clear()
 
