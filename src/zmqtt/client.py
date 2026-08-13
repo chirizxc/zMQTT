@@ -682,7 +682,7 @@ class MQTTClient:
             connect_timeout=self._mqtt_connect_timeout,
             version=self._version,
             stripped_prefixes=self._stripped_prefixes,
-            response_observer=self._request_dispatcher.dispatch,
+            request_router=self._request_dispatcher,
         )
         connect_props = None
         if self._version == "5.0":
@@ -705,8 +705,12 @@ class MQTTClient:
         self._protocol = protocol
         self._request_dispatcher.bind(protocol)
 
-    async def _connect_with_retry(self) -> None:
+    async def _connect_with_retry(self, *, wait_before_first_attempt: bool = False) -> None:
         delay = self._reconnect.initial_delay
+        if wait_before_first_attempt:
+            await asyncio.sleep(delay)
+            delay = min(delay * self._reconnect.backoff_factor, self._reconnect.max_delay)
+
         attempt = 0
         while True:
             try:
@@ -755,7 +759,7 @@ class MQTTClient:
 
             subs_to_restore = list(self._subscriptions)
             log.warning("Connection lost, reconnecting...")
-            await self._connect_with_retry()
+            await self._connect_with_retry(wait_before_first_attempt=True)
             log.info("Successfully reconnected")
 
 
