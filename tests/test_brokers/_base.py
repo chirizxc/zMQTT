@@ -22,6 +22,8 @@ from zmqtt import (
     ReconnectConfig,
     RetainHandling,
     Subscription,
+    Will,
+    WillProperties,
 )
 
 
@@ -327,6 +329,43 @@ class BrokerTestBase(abc.ABC):
                     pytest.fail("Subscription did not recover within 10 s")
 
         assert msg.payload == b"after-reconnect"
+
+    async def test_last_will(self, topic: str) -> None:
+        will_topic = f"{topic}/will"
+        client_id = f"zmqtt-will-{uuid.uuid4().hex[:8]}"
+        will_properties = WillProperties(content_type="text/plain") if self.version == "5.0" else None
+        will = Will(
+            topic=will_topic,
+            payload=b"offline",
+            qos=QoS.AT_LEAST_ONCE,
+            retain=False,
+            properties=will_properties,
+        )
+        victim = MQTTClient(
+            self.host,
+            self.port,
+            client_id=client_id,
+            reconnect=ReconnectConfig(enabled=False),
+            version=self.version,
+            will=will,
+        )
+
+        async with (
+            MQTTClient(self.host, self.port, version=self.version) as observer,
+            observer.subscribe(will_topic, qos=QoS.AT_LEAST_ONCE) as subscription,
+            victim,
+        ):
+            await self.trigger_session_takeover(client_id=client_id)
+            message = await asyncio.wait_for(subscription.get_message(), timeout=5.0)
+
+        assert message.topic == will_topic
+        assert message.payload == b"offline"
+        assert message.qos is QoS.AT_LEAST_ONCE
+        if self.version == "5.0":
+            assert message.properties is not None
+            assert message.properties.content_type == "text/plain"
+        else:
+            assert message.properties is None
 
     async def test_overlapping_wildcard_priority_routing(
         self,
