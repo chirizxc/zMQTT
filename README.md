@@ -1,5 +1,5 @@
 <div align="center">
-  
+
 # zmqtt
 
 [![PyPI version](https://shieldcn.dev/badge/dynamic/json.svg?url=https%3A%2F%2Fpypi.org%2Fpypi%2Fzmqtt%2Fjson&query=%24.info.version&variant=branded&size=xs&mode=light&logo=python&label=pypi+version)](https://pypi.org/project/zmqtt) 
